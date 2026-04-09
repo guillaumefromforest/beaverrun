@@ -558,6 +558,13 @@ function ensureAudio() {
     masterGain = audioCtx.createGain();
     masterGain.gain.value = soundOn ? 1 : 0;
     masterGain.connect(audioCtx.destination);
+    // iOS mute-switch fix: play a silent buffer to move audio to the media channel,
+    // which ignores the hardware mute switch (same as music/video apps).
+    const buf = audioCtx.createBuffer(1, 1, 22050);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
