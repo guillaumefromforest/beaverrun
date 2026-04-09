@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>F0R35T B34V3R RUN</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #DDF327;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Silkscreen', monospace;
+    overflow: hidden;
+    user-select: none;
+  }
+  #gameWrapper { position: relative; width: 906px; border: 3px solid #3F5B1E; }
+  #hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 4px 8px;
+    color: #3F5B1E;
+    font-size: 14px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  canvas { display: block; background: #DDF327; }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    background: #DDF327;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #3F5B1E;
+    z-index: 10;
+  }
+  #overlay h1 { font-size: 32px; margin-bottom: 12px; letter-spacing: 2px; }
+  #overlay .subtitle { font-size: 15px; margin-bottom: 24px; opacity: 0.8; }
+  #overlay .instructions { font-size: 14px; margin-bottom: 8px; line-height: 1.9; text-align: center; }
+  #overlay .hint { font-size: 13px; margin-top: 20px; opacity: 0.7; }
+  .key-pill {
+    display: inline-block;
+    border: 2px solid #3F5B1E;
+    border-radius: 3px;
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: bold;
+    background: #DDF327;
+    vertical-align: middle;
+    line-height: 20px;
+  }
+  .level-badge {
+    font-size: 11px;
+    border: 2px solid #3F5B1E;
+    border-radius: 3px;
+    padding: 2px 8px;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+  <div id="hud">
+    <span id="levelLabel" class="level-badge">LEVEL 1</span>
+    <span id="scoreLabel">SCORE: 0</span>
+    <span id="pineLabel">-----</span>
+    <span id="livesLabel">❤ ❤ ❤</span>
+  </div>
+  <canvas id="c" width="900" height="280"></canvas>
+  <div id="overlay"></div>
+</div>
+
+<script>
+const BG = '#DDF327', FG = '#3F5B1E';
+const W = 900, H = 280, GROUND = H - 48; // 232
+const CELL = 2; // 2px per virtual pixel — finer detail than before
+
+// ─── BEAVER SPRITE ────────────────────────────────────────────────────────────
+// Three matrices — user-designed pixel art:
+//   BEAVER 1 (17×14): tail UP — used for run / jump / swim
+//   BEAVER 2 (20×8) : tail horizontal, jaw OPEN — bite chewPhase 1
+//   BEAVER 3 (20×8) : tail horizontal, jaw CLOSED — bite chewPhase 0
+
+function drawBeaverShape(ctx, ox, oy, frame, state) {
+  const P = BV_CELL;
+  const f = (c,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+  const e = (c,r,w,h) => { ctx.fillStyle=BG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+
+  if (state === 'bite') {
+    // ── BEAVER 2 / 3: horizontal tail, 20×8 ────────────────────────────────
+    const chewPhase = Math.floor(frame / 10) % 2;
+
+    // Horizontal tail: rows 0-1, cols 1-6
+    f(1, 0, 6, 2);
+    // Ear: row 1, col 15
+    f(15, 1);
+    // Tooth: row 1, col 19 (always visible)
+    f(19, 1);
+    // Body: rows 2-5, cols 7-18
+    f(7, 2, 12, 4);
+    // Eye: BG dot carved into body
+    e(17, 3);
+    // Legs — planted: left cols 8-9, right cols 14-15
+    f(8, 6); f(8, 7, 2, 1);
+    f(14, 6); f(14, 7, 2, 1);
+
+    if (chewPhase === 1) {
+      // BEAVER 2: jaw open — extra pixel row 6 col 18
+      f(18, 6);
+    }
+
+  } else {
+    // ── BEAVER 1: upright tail, 17×14 ──────────────────────────────────────
+    const legA = Math.floor(frame/7) % 2 === 0;
+
+    // ── Tail ──
+    if (state === 'swim') {
+      // 4-phase stroke: upright → angling → horizontal → angling
+      const sp = Math.floor(frame / 8) % 4;
+      if (sp === 0 || sp === 3) {
+        f(2, 1, 2, 7);              // fully upright
+      } else if (sp === 1) {
+        f(2, 3, 2, 5); f(1, 5, 4, 2);  // angling down
+      } else {
+        f(1, 5, 1, 2); f(0, 7, 5, 2);  // horizontal power stroke
+      }
+    } else {
+      f(2, 1, 2, 7);  // upright: rows 1-7, cols 2-3
+    }
+
+    // ── Ear: row 7, col 12 ──
+    f(12, 7);
+    // ── Snout tip: row 7, col 16 ──
+    f(16, 7);
+    // ── Body: rows 8-11, cols 4-15 ──
+    f(4, 8, 12, 4);
+    // ── Eye: BG dot carved into body ──
+    e(13, 9);
+    // ── Snout lower: row 12, col 15 ──
+    f(15, 12);
+
+    // ── Legs ──
+    if (state === 'jump') {
+      // Legs tucked up during jump
+      f(5, 11, 2, 1); f(11, 11, 2, 1);
+    } else if (state === 'run') {
+      if (legA) {
+        f(5, 12); f(5, 13, 2, 1);
+        f(11, 12); f(11, 13, 2, 1);
+      } else {
+        f(6, 12); f(6, 13, 2, 1);
+        f(12, 12); f(12, 13, 2, 1);
+      }
+    } else if (state === 'swim') {
+      if (legA) { f(5, 12, 2, 1); f(11, 12, 2, 1); }
+      else       { f(4, 12, 2, 1); f(10, 12, 2, 1); }
+    }
+  }
+}
+
+function drawBeaver(ctx, x, y, frame, state) {
+  drawBeaverShape(ctx, x, y, frame, state);
+}
+
+// ─── FIR TREE SPRITE ──────────────────────────────────────────────────────────
+// 14 cols × 36 rows = 28×72px. Taller trunk so it can't be jumped over.
+// Pivot for falling = trunk base (col 7, row 36).
+
+function drawFir(ctx, x, y, falling, fallAngle, biteProgress) {
+  biteProgress = biteProgress || 0;
+  ctx.save();
+  if (falling) {
+    const px = x + 7 * CELL;   // trunk centre x
+    const py = GROUND;          // trunk base y
+    ctx.translate(px, py);
+    ctx.rotate(fallAngle);
+    ctx.translate(-px, -py);
+  }
+
+  ctx.fillStyle = FG;
+  const P = CELL;
+  const row = (r, c0, len) => ctx.fillRect(x + c0*P, y + r*P, len*P, P);
+
+  // TIP
+  row( 0,  6, 2);
+
+  // UPPER TIER (rows 1–8)
+  row( 1,  5, 4);
+  row( 2,  4, 6);
+  row( 3,  3, 8);
+  row( 4,  5, 4);  // step in
+  row( 5,  4, 6);
+  row( 6,  3, 8);
+  row( 7,  2,10);
+  row( 8,  4, 6);  // step in
+
+  // MID TIER (rows 9–16)
+  row( 9,  3, 8);
+  row(10,  2,10);
+  row(11,  1,12);
+  row(12,  0,14);
+  row(13,  2,10); // step in
+  row(14,  1,12);
+  row(15,  0,14);
+  row(16,  2,10); // step in
+
+  // LOWER TIER (rows 17–19)
+  row(17,  1,12);
+  row(18,  0,14);
+  row(19,  1,12);
+
+  // TRUNK (rows 20–35): lower third narrows from the LEFT (beaver side) as it chomps
+  for (let r = 20; r < 36; r++) {
+    let c0 = 5, len = 4;
+    if (biteProgress > 0 && r >= 29) {
+      // Lower third (rows 29-35): left edge eaten inward by the beaver
+      const rowFrac = (r - 29) / 6;          // 0 at row 29, 1 at row 35
+      const chewed = Math.floor(biteProgress * rowFrac * 3);  // 0-3 cols eaten
+      c0  = 5 + chewed;
+      len = Math.max(1, 4 - chewed);
+    }
+    row(r, c0, len);
+  }
+
+  // Flying wood chips — burst to the RIGHT (open space, not blocked by beaver)
+  if (biteProgress > 0) {
+    for (let i = 0; i < 6; i++) {
+      const t = (frame * 2 + i * 11) % 36;
+      if (t < 22) {
+        const age = t / 22;
+        const cx = x + 5*P + (1 + i) * age * 6;                           // fly right
+        const cy = y + 30*P - (1 + i % 3) * age * 5 + age * age * 8;     // arc up then fall
+        ctx.fillRect(Math.round(cx), Math.round(cy), P, P);
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
+// ─── LOG SPRITE ───────────────────────────────────────────────────────────────
+// 22 cols × 5 rows = 44×10px. log.y = GROUND - 5*CELL
+
+function drawLog(ctx, x, y) {
+  const P = CELL;
+  const row = (r, c0, len) => { ctx.fillStyle=FG; ctx.fillRect(x+c0*P, y+r*P, len*P, P); };
+  const dot = (c, r)        => { ctx.fillStyle=BG; ctx.fillRect(x+c*P,  y+r*P, P,     P); };
+
+  // Log body
+  row(0,  1, 20);
+  row(1,  0, 22);
+  row(2,  0, 22);
+  row(3,  0, 22);
+  row(4,  1, 20);
+
+  // Left end-grain rings
+  dot(1, 1); dot(1, 3);
+  dot(2, 2);
+
+  // Right end-grain rings
+  dot(20, 1); dot(20, 3);
+  dot(19, 2);
+
+  // Bark knots across body
+  dot(5, 0); dot(11, 0); dot(16, 0);
+  dot(6, 4); dot(12, 4); dot(17, 4);
+}
+
+// ─── RIVER ────────────────────────────────────────────────────────────────────
+function drawRiver(ctx, x, w, waveOffset) {
+  ctx.fillStyle = FG;
+  ctx.fillRect(x, GROUND, w, H - GROUND);  // river flush with ground, fills to canvas bottom
+  ctx.fillStyle = BG;
+  for (let i = 0; i < w; i += 24) {
+    const wx = x + i + (waveOffset % 24);
+    ctx.fillRect(wx, GROUND + 6, 11, 4);
+    ctx.fillRect(wx + 10, GROUND + 20, 11, 4);
+  }
+}
+
+// ─── CLOUD ────────────────────────────────────────────────────────────────────
+function drawCloud(ctx, x, y) {
+  const P = CELL;
+  const f = (c,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(x+c*P, y+r*P, (w||1)*P, (h||1)*P); };
+  f(2,0,3,1);
+  f(1,1,5,1);
+  f(0,2,7,2);
+  f(1,4,5,1);
+}
+
+// ─── GRASS ────────────────────────────────────────────────────────────────────
+function drawGrass(ctx, x, y) {
+  const P = CELL;
+  ctx.fillStyle = FG;
+  ctx.fillRect(x,      y,     P, P*2);
+  ctx.fillRect(x+P*2,  y-P,   P, P*3);
+  ctx.fillRect(x+P*4,  y,     P, P*2);
+  ctx.fillRect(x+P*6,  y-P,   P, P*2);
+}
+
+// ─── AUDIO ────────────────────────────────────────────────────────────────────
+let audioCtx = null;
+
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function _beep(freq0, freq1, dur, vol, type) {
+  if (!audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = type || 'square';
+  const t = audioCtx.currentTime;
+  osc.frequency.setValueAtTime(freq0, t);
+  if (freq1 !== freq0) osc.frequency.linearRampToValueAtTime(freq1, t + dur);
+  gain.gain.setValueAtTime(vol || 0.3, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.start(t); osc.stop(t + dur);
+}
+
+function _seq(notes, vol) {
+  if (!audioCtx) return;
+  let t = audioCtx.currentTime;
+  for (const [freq, dur] of notes) {
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(vol || 0.25, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.start(t); osc.stop(t + dur);
+    t += dur;
+  }
+}
+
+function sfxStep()     { _beep(70,  50,  0.04, 0.07); }
+function sfxJump()     { _beep(180, 540, 0.15, 0.25); }
+function sfxChomp()    { _beep(110, 55,  0.07, 0.2 ); }
+function sfxHit()      { _beep(280, 80,  0.25, 0.3 ); }
+function sfxLifeLost() { _seq([[400, 0.12], [300, 0.12], [180, 0.25]], 0.3); }
+function sfxBonus()    { _seq([[350, 0.07], [450, 0.07], [550, 0.07], [750, 0.12]], 0.25); }
+function sfxLifeUp()   { _seq([[300, 0.07], [400, 0.07], [600, 0.07], [800, 0.18]], 0.3); }
+
+function sfxSplash() {
+  if (!audioCtx) return;
+  const bufLen = Math.floor(audioCtx.sampleRate * 0.12);
+  const buf  = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+  const src    = audioCtx.createBufferSource();
+  const filter = audioCtx.createBiquadFilter();
+  const gain   = audioCtx.createGain();
+  src.buffer = buf;
+  filter.type = 'highpass'; filter.frequency.value = 1200;
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+  src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+  src.start();
+}
+
+// ─── GAME STATE ───────────────────────────────────────────────────────────────
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+
+let gameState = 'title';
+let level = 1, score = 0, lives = 3, hiScore = 0;
+let frame = 0, speed = 2.5;
+let worldPaused = false;
+let levelStartScore = 0;
+
+const BV_H = 14;      // BEAVER 1: 14 rows tall
+const BV_H_BITE = 8;  // BEAVER 2/3: 8 rows tall
+const BV_CELL = 3;    // beaver sprite pixel size (larger than world sprites)
+const FIR_H = 36; // tall enough that it cannot be jumped over
+const LOG_H = 5;
+
+const bv = {
+  x: 80,
+  y: GROUND - BV_H * BV_CELL,
+  vy: 0,
+  state: 'run',
+  biteTimer: 0,
+  invincible: 0,
+  _riverDecay: 0,
+  _swimProgress: 0,  // px swum through current river
+};
+
+let obstacles  = [];
+let clouds     = [];
+let grassTufts = [];
+let spawnTimer = 80;
+let waveOffset = 0;
+
+let riverActive    = false;
+let riverAlternate = 0;
+let lastRiverKey   = '';
+let activeFir      = null;
+let currentRiver   = null;  // river obstacle currently being swum
+let riverTimer     = 0;     // total frames in current river crossing
+let lastStrokeFrame = -100; // frame number of last valid swim stroke (for splash)
+let lastTailStroke  = -100; // frame when tail hit horizontal phase (for splash visual)
+let prevFrame       = 0;    // frame value from previous update (for diff-based sound detection)
+let speedTimer      = 0;    // replaces frame%500 speed ramp
+let hudTimer        = 0;    // replaces frame%30 HUD throttle
+let lastTime        = 0;    // timestamp of previous rAF call (for delta-time)
+let pinecones       = 0;    // perfect-chomp pinecone counter
+let spawnCounts     = {};   // obstacle type counts this level (for 20% min enforcement)
+let winAnimInterval = null; // setInterval handle for win-screen beaver animation
+let floatingHearts  = [];   // hearts that fly up on life loss
+let floatingTexts   = [];   // bonus text labels that rise and fade
+let dustParticles   = [];   // ground dust puffs on jump takeoff
+let dyingTimer      = 0;    // counts down before showing OUCH screen
+let bvVisualOffset  = 0;    // smooth x offset after river crossing (slides back to 0)
+
+// ─── KEYS ─────────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => {
+  const prev = keys[e.code];
+  keys[e.code] = true;
+  if (!prev) onKeyDown(e.code);
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function cheatToLevel(lvl) {
+  level = lvl; lives = 3; score = 0;
+  worldPaused = false;
+  if (activeFir) { activeFir.chomping = false; activeFir = null; }
+  gameState = 'levelIntro';
+  showLevelIntro(lvl);
+}
+
+function onKeyDown(code) {
+  ensureAudio();
+  // Cheat codes: A/B/C skip to level 1/2/3 from anywhere
+  if (code === 'KeyA') { cheatToLevel(1); return; }
+  if (code === 'KeyB') { cheatToLevel(2); return; }
+  if (code === 'KeyC') { cheatToLevel(3); return; }
+
+  // Pause / resume with Space during play
+  if (code === 'Space' && gameState === 'playing') {
+    gameState = 'paused';
+    showOverlay(`<h1>PAUSED</h1><div class="hint">Press <span class="key-pill">SPACE</span> to resume</div>`);
+    return;
+  }
+  if ((code === 'Space' || code === 'Enter') && gameState === 'paused') {
+    gameState = 'playing';
+    hideOverlay();
+    return;
+  }
+
+  if (gameState === 'dying') return;  // ignore input during death animation
+  if (['title','levelIntro','dead','win'].includes(gameState)) {
+    if (code === 'Space' || code === 'Enter') { startOrAdvance(); return; }
+  }
+  if (gameState !== 'playing') return;
+
+  if (code === 'ArrowUp' && bv.state === 'run') {
+    bv.vy = -10;
+    bv.state = 'jump';
+    sfxJump();
+    // Dust burst at beaver's feet
+    for (let i = 0; i < 7; i++) {
+      dustParticles.push({
+        x: bv.x + (3 + i * 2) * BV_CELL,
+        y: GROUND - 1,
+        dx: (i - 3) * 0.9,
+        dy: -1.2 - (i % 3) * 0.4,
+        t: 0,
+      });
+    }
+  }
+
+  if (code === 'ArrowDown' && bv.state === 'run' && bv.invincible === 0) {
+    const nearFir = obstacles.find(o =>
+      o.type === 'fir' && !o.chomping && !o.falling &&
+      o.x - bv.x > 0 && o.x - bv.x < 110
+    );
+    if (nearFir) {
+      bv.state     = 'bite';
+      bv.biteTimer = 72;   // ~1.2 seconds of chewing
+      bv.y         = GROUND - BV_H_BITE * BV_CELL;
+      activeFir    = nearFir;
+      nearFir.chomping = true;
+      worldPaused  = true;
+    }
+  }
+
+  if (code === 'ArrowLeft' || code === 'ArrowRight') {
+    if (riverActive && bv.state === 'swim') {
+      const dir = code === 'ArrowLeft' ? 'left' : 'right';
+      // Anti-cheat: both arrow keys held simultaneously don't count as alternation
+      const bothHeld = keys['ArrowLeft'] && keys['ArrowRight'];
+      if (dir !== lastRiverKey && !bothHeld) { lastRiverKey = dir; riverAlternate++; }
+    }
+  }
+}
+
+// ─── OVERLAYS ─────────────────────────────────────────────────────────────────
+const LEVEL_DATA = [
+  {
+    title: 'LEVEL 1 — THE FOREST',
+    intro: `A fir tree blocks the path!<br><br>
+      Press <span class="key-pill">↓ DOWN</span> to start chewing.<br>
+      The beaver will gnaw it down — then run!<br><br>
+      Stop just before the trunk for a PERFECT chop.<br>
+      Perfect chop = * pinecone. 5 cones = extra life (if hurt).`,
+    obstacles: ['fir'],
+  },
+  {
+    title: 'LEVEL 2 — FALLEN LOGS',
+    intro: `Logs block the trail!<br><br>
+      Press <span class="key-pill">↑ UP</span> to jump over them.<br>
+      Watch for fir trees too.`,
+    obstacles: ['fir','log'],
+  },
+  {
+    title: 'LEVEL 3 — THE RIVER',
+    intro: `A river cuts through the forest!<br><br>
+      Alternate <span class="key-pill">← LEFT</span> &nbsp;and&nbsp; <span class="key-pill">→ RIGHT</span> to swim.<br>
+      Stop and you sink. Plus all previous obstacles.`,
+    obstacles: ['fir','log','river'],
+  },
+];
+
+function showOverlay(html) { overlay.innerHTML = html; overlay.style.display = 'flex'; }
+function hideOverlay() {
+  overlay.style.display = 'none';
+  if (winAnimInterval) { clearInterval(winAnimInterval); winAnimInterval = null; }
+}
+
+function showTitle() {
+  // Canvas: 17 cols × BV_CELL(3) = 51px wide + 4 pad = 55; 14 rows × 3 = 42px + 4 = 46
+  showOverlay(`<canvas id="bvTitle" width="55" height="46" style="width:110px;height:92px;margin-bottom:10px;image-rendering:pixelated;image-rendering:crisp-edges"></canvas>
+    <h1>F0R35T B34V3R RUN</h1>
+    <div class="subtitle">A forest survival story</div>
+    <div class="instructions">Chop. Jump. Swim. Survive.</div>
+    <div class="hint">Press <span class="key-pill">SPACE</span> or <span class="key-pill">ENTER</span> to start</div>`);
+  const bc = document.getElementById('bvTitle');
+  const bctx = bc.getContext('2d');
+  bctx.fillStyle = BG; bctx.fillRect(0, 0, 55, 46);
+  drawBeaverShape(bctx, 2, 2, 0, 'run');
+}
+function showLevelIntro(lvl) {
+  const d = LEVEL_DATA[lvl-1];
+  showOverlay(`<div class="level-badge">${d.title}</div><br>
+    <div class="instructions">${d.intro}</div>
+    <div class="hint">Press <span class="key-pill">SPACE</span> to play</div>`);
+}
+function showDead() {
+  showOverlay(`<h1>OUCH!</h1>
+    <div class="subtitle">Score: ${Math.floor(score)} &nbsp;|&nbsp; Best: ${Math.floor(hiScore)}</div>
+    <div class="hint">Press <span class="key-pill">SPACE</span> to try again</div>`);
+}
+function showWin() {
+  showOverlay(`<canvas id="bvWin" width="55" height="46" style="width:110px;height:92px;margin-bottom:10px;image-rendering:pixelated;image-rendering:crisp-edges"></canvas>
+    <h1>YOU WIN!</h1>
+    <div class="subtitle">The beaver made it through the forest!</div>
+    <div class="subtitle">Final score: ${Math.floor(score)}</div>
+    <div class="hint">Press <span class="key-pill">SPACE</span> to play again</div>`);
+  const bc = document.getElementById('bvWin');
+  const bctx = bc.getContext('2d');
+  // 2-frame animation: run pose (legged, ground) ↔ jump pose (airborne, higher)
+  let phase = 0;
+  function drawWinFrame() {
+    bctx.fillStyle = BG; bctx.fillRect(0, 0, 55, 46);
+    if (phase === 0) {
+      drawBeaverShape(bctx, 2, 4, 0, 'run');   // legs planted, near canvas bottom
+    } else {
+      drawBeaverShape(bctx, 2, 0, 0, 'jump');  // body higher, legs tucked
+    }
+    phase = 1 - phase;
+  }
+  drawWinFrame();
+  winAnimInterval = setInterval(drawWinFrame, 420);
+}
+
+function startOrAdvance() {
+  if (gameState === 'title') {
+    level = 1; score = 0; lives = 3; pinecones = 0;
+    gameState = 'levelIntro'; showLevelIntro(level); return;
+  }
+  if (gameState === 'levelIntro') { startLevel(level); return; }
+  if (gameState === 'dead') {
+    if (lives > 0) { gameState = 'levelIntro'; showLevelIntro(level); }
+    else { level=1; score=0; lives=3; pinecones=0; gameState='levelIntro'; showLevelIntro(level); }
+    return;
+  }
+  if (gameState === 'win') {
+    level=1; score=0; lives=3; pinecones=0; gameState='levelIntro'; showLevelIntro(level);
+  }
+}
+
+function startLevel(lvl) {
+  hideOverlay();
+  gameState = 'playing';
+  speed = [4.8, 6.0, 6.4][lvl - 1];
+  levelStartScore = score;
+  spawnTimer = 100;
+  obstacles  = [];
+  speedTimer     = 0;
+  hudTimer       = 0;
+  spawnCounts    = {};
+  floatingHearts = [];
+  floatingTexts  = [];
+  dustParticles  = [];
+  dyingTimer = 0;
+  bvVisualOffset = 0;
+  worldPaused = false;
+  activeFir   = null;
+  currentRiver = null;
+  riverTimer   = 0;
+  bv.y = GROUND - BV_H * BV_CELL;
+  bv.vy = 0;
+  bv.state = 'run';
+  bv.biteTimer = 0;
+  bv.invincible = 0;
+  bv._riverDecay = 0;
+  bv._swimProgress = 0;
+  riverActive = false;
+  updateHUD();
+}
+
+function updateHUD() {
+  document.getElementById('levelLabel').textContent = `LEVEL ${level}`;
+  document.getElementById('scoreLabel').textContent = `SCORE: ${Math.floor(score)}`;
+  document.getElementById('pineLabel').textContent  = '*'.repeat(pinecones) + '-'.repeat(5 - pinecones);
+  document.getElementById('livesLabel').textContent = lives > 0 ? '❤ '.repeat(lives).trim() : '☆';
+}
+
+// ─── SPAWN ────────────────────────────────────────────────────────────────────
+// Varied spacing: 20% close duo (30-55 frames), 55% normal (105-160), 25% breather (185-260)
+function randomSpawnDelay() {
+  const r = Math.random();
+  if (r < 0.20) return 30 + Math.random() * 25;
+  if (r < 0.75) return 105 + Math.random() * 55;
+  return 185 + Math.random() * 75;
+}
+
+function spawnObstacle() {
+  const allowed = LEVEL_DATA[level-1].obstacles;
+  let pool = [...allowed];
+  // Level 3: rivers appear as often as any other obstacle (1-in-3 chance)
+  if (pool.includes('river')) { pool = ['fir', 'log', 'river']; }
+
+  // Enforce ≥20% per type: after 5 spawns, restrict pool to deficit types if any
+  const total = Object.values(spawnCounts).reduce((a, b) => a + b, 0);
+  if (total >= 5) {
+    const deficitTypes = pool.filter(t => (spawnCounts[t] || 0) / total < 0.20);
+    if (deficitTypes.length > 0) pool = deficitTypes;
+  }
+
+  const type = pool[Math.floor(Math.random() * pool.length)];
+  spawnCounts[type] = (spawnCounts[type] || 0) + 1;
+
+  if (type === 'fir') {
+    obstacles.push({ type:'fir', x: W+20, y: GROUND - FIR_H*CELL,
+      falling:false, chomping:false, fallAngle:0, done:false });
+    spawnTimer = randomSpawnDelay();
+  } else if (type === 'log') {
+    obstacles.push({ type:'log', x: W+20, y: GROUND - LOG_H*CELL });
+    spawnTimer = randomSpawnDelay();
+  } else if (type === 'river') {
+    const rw = 200 + Math.random()*60; // width = required swim distance (~14-18 strokes)
+    obstacles.push({ type:'river', x: W+20, w: rw, passed: false });
+    spawnTimer = 200 + Math.random()*80;  // rivers always need breathing room
+  }
+}
+
+// ─── COLLISION ────────────────────────────────────────────────────────────────
+function beaverRect() {
+  if (bv.state === 'bite') {
+    // BEAVER 2/3: body at cols 7-18, rows 2-5
+    return { x: bv.x + 7*BV_CELL, y: bv.y + 2*BV_CELL, w: 12*BV_CELL, h: 4*BV_CELL };
+  }
+  // BEAVER 1: body at cols 4-15, rows 8-11
+  return { x: bv.x + 4*BV_CELL, y: bv.y + 8*BV_CELL, w: 12*BV_CELL, h: 4*BV_CELL };
+}
+function overlap(a, b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function hitObstacle() {
+  if (bv.invincible > 0) return;
+  lives--;
+  hiScore = Math.max(hiScore, score);
+  sfxHit();
+  // Spawn a floating heart at the beaver's current position
+  floatingHearts.push({ x: bv.x + 9*BV_CELL, y: bv.y + 9*BV_CELL, t: 0 });
+  updateHUD();
+  if (lives <= 0) {
+    sfxLifeLost();
+    gameState = 'dying';   // allow heart animation to play for 1s first
+    worldPaused = false;
+    dyingTimer  = 60;      // 60 frames ≈ 1 second before OUCH overlay
+  } else {
+    bv.invincible = 120;
+    bv.state = 'run';
+    bv.y = GROUND - BV_H * BV_CELL;
+    bv.vy = 0;
+    riverActive      = false;
+    worldPaused      = false;
+    bv._swimProgress = 0;
+    bvVisualOffset   = 0;
+    if (currentRiver) { currentRiver.passed = true; currentRiver = null; }
+    riverTimer = 0;
+    if (activeFir) { activeFir.chomping = false; activeFir = null; }
+  }
+}
+
+// ─── ENVIRONMENT ──────────────────────────────────────────────────────────────
+function initEnvironment() {
+  clouds = [];
+  grassTufts = [];
+  for (let i = 0; i < 6; i++)
+    clouds.push({ x: Math.random()*W, y: 18 + Math.random()*55, speed: 0.35 + Math.random()*0.35 });
+  for (let i = 0; i < 16; i++)
+    grassTufts.push({ x: Math.random()*W });
+}
+initEnvironment();
+
+// ─── UPDATE ───────────────────────────────────────────────────────────────────
+// dt = elapsed time normalised to 60 fps (1.0 = exactly 60 fps, 2.0 = 30 fps).
+// All movement, timers and physics are multiplied by dt so the game runs at a
+// consistent real-time speed regardless of the display refresh rate or power mode.
+function update(dt) {
+  // These run regardless of game state (hearts fly, death delay ticks)
+  for (let i = floatingHearts.length - 1; i >= 0; i--) {
+    floatingHearts[i].t += dt;
+    floatingHearts[i].y -= 0.9 * dt;
+    if (floatingHearts[i].t > 120) floatingHearts.splice(i, 1);
+  }
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    floatingTexts[i].t += dt;
+    floatingTexts[i].y -= 0.6 * dt;
+    if (floatingTexts[i].t > 90) floatingTexts.splice(i, 1);
+  }
+  for (let i = dustParticles.length - 1; i >= 0; i--) {
+    const d = dustParticles[i];
+    d.t += dt; d.x += d.dx * dt; d.y += d.dy * dt; d.dy += 0.12 * dt;
+    if (d.t > 22) dustParticles.splice(i, 1);
+  }
+  if (dyingTimer > 0) {
+    dyingTimer -= dt;
+    if (dyingTimer <= 0) { gameState = 'dead'; showDead(); }
+  }
+
+  if (gameState !== 'playing') return;
+
+  prevFrame = frame;
+  frame += dt;
+
+  // ── Step sound: fires on each leg-phase flip while running ──
+  if (bv.state === 'run' && !worldPaused) {
+    const legNow  = Math.floor(frame / 7) % 2;
+    const legPrev = Math.floor(prevFrame / 7) % 2;
+    if (legNow !== legPrev) sfxStep();
+  }
+  // ── Chomp sound: fires each time jaw opens (chewPhase → 1) ──
+  if (bv.state === 'bite') {
+    const chewNow  = Math.floor(frame / 10) % 2;
+    const chewPrev = Math.floor(prevFrame / 10) % 2;
+    if (chewNow === 1 && chewPrev !== 1) sfxChomp();
+  }
+
+  if (!worldPaused) {
+    score += dt;
+    if (score > hiScore) hiScore = score;
+    hudTimer += dt;
+    if (hudTimer >= 30) { hudTimer -= 30; updateHUD(); }
+    waveOffset += 2 * dt;
+    speedTimer += dt;
+    if (speedTimer >= 500) { speedTimer -= 500; speed = Math.min(speed + 0.25, 9); }
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) spawnObstacle();
+  }
+
+  // ── Beaver physics ──
+  if (bv.state === 'jump') {
+    bv.vy += 0.65 * dt;
+    bv.y  += bv.vy * dt;
+    if (bv.y >= GROUND - BV_H*BV_CELL) {
+      bv.y = GROUND - BV_H*BV_CELL;
+      bv.vy = 0;
+      bv.state = 'run';
+    }
+  }
+
+  // ── Bite / chew timer ──
+  if (bv.state === 'bite') {
+    bv.biteTimer -= dt;
+    if (bv.biteTimer <= 0) {
+      if (activeFir) {
+        // Perfect chomp: snout just before the trunk (not past it, not too far)
+        // Beaver snout at bv.x+48, trunk front at fir.x+10 → gap = fir.x - bv.x - 38
+        const dist = activeFir.x - bv.x;
+        if (dist >= 38 && dist <= 68) {
+          pinecones++;
+          floatingTexts.push({ text: 'PERFECT! *', x: bv.x - 6, y: bv.y - 4, t: 0 });
+          if (pinecones >= 5 && lives < 3) {
+            lives++;
+            pinecones = 0;
+            floatingTexts.push({ text: '+ EXTRA LIFE! ❤', x: bv.x - 6, y: bv.y - 22, t: 0 });
+            sfxLifeUp();
+          } else {
+            sfxBonus();
+          }
+          updateHUD();
+        }
+        activeFir.falling = true;
+        activeFir.chomping = false;
+      }
+      activeFir   = null;
+      worldPaused = false;
+      bv.state    = 'run';
+      bv.y        = GROUND - BV_H * BV_CELL;
+    }
+  }
+
+  // ── River swim — mandatory crossing mechanic ──
+  // World freezes when beaver hits a river. Player must actively swim (alternate
+  // ← → arrows) to advance through it. Too slow between strokes = drown.
+  riverActive = false;
+  for (const o of obstacles) {
+    if (o.type === 'river' && !o.passed) {
+      const bx = bv.x + 8*BV_CELL;
+      if (bx > o.x && bx < o.x + o.w) {
+        riverActive = true;
+        if (bv.state !== 'swim') {
+          bv.state = 'swim';
+          bv.vy    = 0;
+          riverAlternate   = 0;
+          lastRiverKey     = '';
+          currentRiver     = o;
+          riverTimer       = 0;
+          // Start visual position at beaver's actual entry point in the river
+          bv._swimProgress = Math.max(0, bv.x + 8*BV_CELL - o.x);
+          bv.y = GROUND - 10 * BV_CELL;  // body straddles ground/water surface, tail above
+          worldPaused = true;  // freeze world — must swim across
+        }
+      }
+    }
+  }
+  if (!riverActive && bv.state === 'swim') {
+    // Exited river zone (e.g. after hitObstacle reset)
+    bv.state = 'run';
+    bv.y = GROUND - BV_H*BV_CELL;
+  }
+
+  // River crossing logic
+  if (riverActive && bv.state === 'swim' && currentRiver) {
+    bv._riverDecay += dt;
+    riverTimer     += dt;
+
+    if (riverAlternate > 0) {
+      // Good stroke — advance and reset drown timer
+      bv._swimProgress += 14;
+      bv._riverDecay   = 0;
+      lastStrokeFrame  = frame;
+      riverAlternate   = 0;
+
+      // Crossed? Body center (col 10 = 10*BV_CELL from origin) past river exit
+      // = 50%+ of body is out of the river — don't drown on the last strokes!
+      if (bv._swimProgress + 10*BV_CELL >= currentRiver.w) {
+        // bvVisualOffset records how far right the beaver appeared visually;
+        // it decays each frame, pulling the world forward at the same rate —
+        // no instant jump, just a smooth run-out.
+        bvVisualOffset = (currentRiver.x + bv._swimProgress) - bv.x;
+        currentRiver.passed = true;
+        currentRiver = null;
+        bv.state     = 'run';
+        bv.y         = GROUND - BV_H*BV_CELL;
+        bv._riverDecay   = 0;
+        bv._swimProgress = 0;
+        riverActive  = false;
+        riverTimer   = 0;
+        worldPaused  = false;
+      }
+    }
+
+    // Only update swim y if still crossing (not just completed or hit)
+    if (currentRiver) {
+      // At surface when swimming well; sinks linearly after 20 idle frames
+      // Full sink at decay=140 (2s of "FASTER" display) — then lose a life
+      const sinkRatio = Math.min(Math.max(0, bv._riverDecay - 20) / 120, 1);
+      bv.y = GROUND - 10*BV_CELL + Math.floor(sinkRatio * 10*BV_CELL);
+
+      // Lose a life after 2 seconds showing FASTER (decay 20→140)
+      if (bv._riverDecay > 140) {
+        hitObstacle();
+        bv._riverDecay = 0;
+        riverTimer     = 0;
+      }
+    }
+  } else if (!riverActive) {
+    bv._riverDecay   = 0;
+    bv._swimProgress = 0;
+  }
+
+  if (bv.invincible > 0) bv.invincible = Math.max(0, bv.invincible - dt);
+
+  // ── Tail-stroke splash detection (phase 2 = horizontal/power stroke) ──
+  if (bv.state === 'swim' && riverActive) {
+    const sp  = Math.floor(frame / 8) % 4;
+    const psp = Math.floor(prevFrame / 8) % 4;
+    if (sp === 2 && psp !== 2 && bv._riverDecay <= 20) { lastTailStroke = frame; sfxSplash(); }
+  }
+
+  // ── Post-river slide: world catches up as beaver glides back to x=80 ──
+  // step is in pixels (already scaled by dt via speed*dt cap)
+  let extraScroll = 0;
+  if (bvVisualOffset > 0) {
+    const step = Math.min(bvVisualOffset, speed * dt);
+    bvVisualOffset = Math.max(0, bvVisualOffset - step);
+    extraScroll = step;
+  }
+
+  // ── Obstacle update ──
+  for (let i = obstacles.length-1; i >= 0; i--) {
+    const o = obstacles[i];
+
+    if (!worldPaused) o.x -= speed * dt + extraScroll;
+
+    if (o.type === 'fir') {
+      if (o.falling) {
+        o.fallAngle += 0.065 * dt;
+        if (o.fallAngle >= Math.PI/2) { o.done = true; o.fallAngle = Math.PI/2; }
+      }
+      if (o.done && o.x < -60) { obstacles.splice(i,1); continue; }
+      if (!o.falling && !o.chomping && !o.done) {
+        const firRect = { x: o.x + 3*CELL, y: o.y, w: 8*CELL, h: FIR_H*CELL };
+        if (overlap(beaverRect(), firRect)) hitObstacle();
+      }
+      if (!o.falling && !o.chomping && o.x < -30) { obstacles.splice(i,1); continue; }
+    }
+
+    if (o.type === 'log') {
+      const logRect = { x: o.x, y: o.y, w: 22*CELL, h: LOG_H*CELL };
+      if (bv.state !== 'jump' && overlap(beaverRect(), logRect)) hitObstacle();
+      if (o.x < -90) obstacles.splice(i,1);
+    }
+
+    if (o.type === 'river') {
+      if (o.x + o.w < 0) { obstacles.splice(i,1); continue; }
+      if (!o.passed && o.x + o.w < bv.x) { o.passed = true; score += 20; }
+    }
+  }
+
+  // ── Clouds & grass ──
+  if (!worldPaused) {
+    for (const c of clouds) {
+      c.x -= c.speed * dt + extraScroll * (c.speed / speed);
+      if (c.x < -60) { c.x = W+20; c.y = 18 + Math.random()*55; }
+    }
+    for (const g of grassTufts) {
+      g.x -= speed * dt + extraScroll;
+      if (g.x < -20) g.x = W + Math.random()*40;
+    }
+  }
+
+  // ── Level completion ──
+  const thresholds = [1800, 2400, 3000];
+  if ((score - levelStartScore) >= thresholds[level-1] && gameState === 'playing') {
+    if (level < 3) { level++; gameState = 'levelIntro'; showLevelIntro(level); }
+    else           { gameState = 'win'; showWin(); }
+  }
+}
+
+// ─── RENDER ───────────────────────────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+
+  // Ground
+  ctx.fillStyle = FG;
+  ctx.fillRect(0, GROUND,   W, 3);
+  ctx.fillRect(0, GROUND+3, W, 2);
+
+  // Clouds
+  for (const c of clouds) drawCloud(ctx, c.x, c.y);
+
+  // Grass tufts
+  for (const g of grassTufts) drawGrass(ctx, g.x, GROUND - CELL);
+
+  // Obstacles (back to front)
+  for (const o of obstacles) {
+    if (o.type === 'river') drawRiver(ctx, o.x, o.w, waveOffset);
+    if (o.type === 'log')   drawLog(ctx, o.x, o.y);
+    if (o.type === 'fir') {
+      const bp = (o.chomping && bv.state === 'bite') ? Math.max(0, 1 - bv.biteTimer / 72) : 0;
+      drawFir(ctx, o.x, o.y, o.falling, o.fallAngle, bp);
+    }
+  }
+
+  // Beaver visual x: moves through river when swimming, then slides back to x=80
+  const bvDrawX = (bv.state === 'swim' && currentRiver)
+    ? currentRiver.x + bv._swimProgress
+    : bv.x + bvVisualOffset;
+
+  // Beaver (blink when invincible)
+  if (bv.invincible === 0 || Math.floor(bv.invincible/6) % 2 === 0) {
+    drawBeaver(ctx, bvDrawX, bv.y, frame, bv.state);
+  }
+
+  // "CHOMP" label during bite
+  if (bv.state === 'bite') {
+    const chewPhase = Math.floor(frame / 10) % 2;
+    if (chewPhase === 1) {
+      ctx.fillStyle = FG;
+      ctx.font = 'bold 11px "Silkscreen", monospace';
+      ctx.fillText('CHOMP!', bv.x - 12, bv.y - 6);
+    }
+  }
+
+  // River swim: text warning + upward water splash
+  if (riverActive && bv.state === 'swim') {
+    ctx.fillStyle = FG;
+    ctx.font = 'bold 12px "Silkscreen", monospace';
+    if (bv._riverDecay > 90) {
+      ctx.fillText('SWIM!!!', bvDrawX - 16, bv.y - 6);
+    } else if (bv._riverDecay > 20) {
+      ctx.fillText('FASTER', bvDrawX - 14, bv.y - 6);
+    }
+
+    // Upward splash when tail hits horizontal (power stroke)
+    const splashAge = frame - lastTailStroke;
+    if (splashAge < 18) {
+      ctx.fillStyle = FG;  // dark drops on yellow sky — visible above waterline
+      const sx = bvDrawX + 1*BV_CELL;  // tail x (left side of beaver)
+      const sy = bv.y + 7*BV_CELL;    // near water surface level
+      if (splashAge < 5) {
+        // Large upward burst
+        ctx.fillRect(sx - 10, sy - 16, 2, 8);
+        ctx.fillRect(sx -  5, sy - 20, 2, 10);
+        ctx.fillRect(sx,      sy - 14, 2, 7);
+        ctx.fillRect(sx +  5, sy - 10, 2, 5);
+        ctx.fillRect(sx - 15, sy - 10, 2, 5);
+      } else if (splashAge < 11) {
+        // Mid-phase: drops arcing
+        ctx.fillRect(sx - 12, sy - 12, 2, 3);
+        ctx.fillRect(sx -  5, sy - 16, 2, 4);
+        ctx.fillRect(sx +  2, sy - 10, 2, 3);
+        ctx.fillRect(sx - 18, sy -  8, 2, 2);
+      } else {
+        // Final specks falling back
+        ctx.fillRect(sx -  8, sy -  8, 2, 2);
+        ctx.fillRect(sx -  2, sy -  6, 2, 2);
+        ctx.fillRect(sx +  4, sy -  5, 2, 2);
+      }
+    }
+  }
+
+  // Floating hearts (life lost)
+  ctx.font = '14px "Silkscreen", monospace';
+  for (const h of floatingHearts) {
+    ctx.globalAlpha = Math.max(0, 1 - h.t / 120);
+    ctx.fillStyle = FG;
+    ctx.fillText('❤', h.x, h.y);
+  }
+  ctx.globalAlpha = 1;
+
+  // Jump dust puffs
+  for (const d of dustParticles) {
+    ctx.globalAlpha = Math.max(0, 1 - d.t / 22) * 0.65;
+    ctx.fillStyle = FG;
+    ctx.fillRect(Math.round(d.x), Math.round(d.y), 2, 2);
+  }
+  ctx.globalAlpha = 1;
+
+  // Floating bonus texts (perfect chomp etc.)
+  ctx.font = 'bold 10px "Silkscreen", monospace';
+  for (const t of floatingTexts) {
+    ctx.globalAlpha = Math.max(0, 1 - t.t / 90);
+    ctx.fillStyle = FG;
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── LOOP ─────────────────────────────────────────────────────────────────────
+// Delta-time loop: measures real elapsed time between frames and normalises to
+// 60 fps so the game runs at consistent speed on any display (30/60/120 Hz) and
+// in any power mode (battery vs. plugged-in).
+function loop(now) {
+  if (!lastTime) { lastTime = now; requestAnimationFrame(loop); return; }
+  const rawDt = (now - lastTime) / (1000 / 60); // 1.0 = 60 fps, 2.0 = 30 fps
+  const dt    = Math.min(rawDt, 3);             // cap at 3× to absorb tab-restore spikes
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+gameState = 'title';
+showTitle();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
