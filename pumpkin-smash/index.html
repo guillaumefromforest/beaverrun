@@ -399,16 +399,30 @@ function ensureAudio() {
     masterGain = audioCtx.createGain();
     masterGain.gain.value = soundOn ? 1 : 0;
     masterGain.connect(audioCtx.destination);
-    // iOS mute-switch fix: play a silent buffer to move audio to the media channel,
-    // which ignores the hardware mute switch (same as music/video apps).
-    const buf = audioCtx.createBuffer(1, 1, 22050);
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    src.connect(audioCtx.destination);
-    src.start(0);
+    // Older iOS (no audioSession API): playing a silent <audio> element inside the
+    // user gesture moves the page to the media channel, which ignores the mute switch.
+    if (!navigator.audioSession) {
+      const el = document.createElement('audio');
+      el.setAttribute('x-webkit-airplay', 'deny');
+      el.loop = true;
+      el.src = SILENT_WAV;
+      el.play().catch(() => {});
+    }
   }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // iOS uses 'interrupted' (not just 'suspended') after a lock screen, call or app switch
+  if (audioCtx.state !== 'running') audioCtx.resume();
 }
+
+// iOS 17+: treat game sound as media playback so it plays with the ringer switch on silent
+if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
+const SILENT_WAV = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+// Retry the audio unlock on every real user gesture, and when coming back to the tab
+['touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, () => {
+  if (audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+}, true));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+});
 function toggleSound() {
   soundOn = !soundOn;
   if (masterGain) masterGain.gain.value = soundOn ? 1 : 0;
