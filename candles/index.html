@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Forest Beaver - Birthday Edition</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #3F5B1E;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100vh;
+    font-family: 'Silkscreen', monospace;
+    overflow: hidden; user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  #gameWrapper { position: relative; width: 906px; max-width: 100vw; border: 3px solid #DDF327; padding-bottom: 34px; }
+  #hud {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 4px 8px; color: #DDF327; font-size: 14px; font-weight: bold; letter-spacing: 1px;
+  }
+  canvas { display: block; background: #3F5B1E; width: 100%; height: auto; }
+  #overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: #3F5B1E; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #DDF327; z-index: 10;
+  }
+  #overlay h1 { font-size: 32px; margin-bottom: 12px; letter-spacing: 2px; text-align: center; }
+  #overlay .subtitle { font-size: 15px; margin-bottom: 24px; opacity: 0.8; text-align: center; }
+  #overlay .instructions { font-size: 14px; margin-bottom: 8px; line-height: 1.9; text-align: center; }
+  #overlay .hint { font-size: 13px; margin-top: 20px; opacity: 0.7; text-align: center; }
+  .key-pill {
+    display: inline-block; border: 2px solid #DDF327; border-radius: 3px;
+    padding: 0 6px; font-size: 12px; font-weight: bold; background: #3F5B1E;
+    vertical-align: middle; line-height: 20px;
+  }
+  #soundToggle {
+    position: absolute; bottom: 7px; left: 8px; width: 24px; height: 24px;
+    background: none; color: #DDF327; border: none; padding: 0;
+    cursor: pointer; z-index: 15; opacity: 0.6;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #soundToggle:hover { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+  <div id="hud">
+    <span id="scoreLabel">CANDLES: 0</span>
+    <span id="bestLabel">BEST: 0</span>
+    <span id="livesLabel">❤ ❤ ❤</span>
+  </div>
+  <canvas id="c" width="900" height="280"></canvas>
+  <div id="overlay"></div>
+  <button id="soundToggle" onclick="toggleSound()"></button>
+</div>
+
+<script>
+const BG = '#3F5B1E', FG = '#DDF327';
+const W = 900, H = 280, GROUND = H - 48;
+const CELL = 2;      // world sprite pixel size
+const BV_CELL = 3;   // beaver sprite pixel size
+const BV_H = 15;
+
+// ─── BEAVER SPRITE ────────────────────────────────────────────────────────────
+function drawBeaver(ctx, ox, oy, frame, state) {
+  const P = BV_CELL;
+  const f = (c,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+  const e = (c,r,w,h) => { ctx.fillStyle=BG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+  const legA = Math.floor(frame/7) % 2 === 0;
+  // Tail
+  if (legA || state === 'jump') f(5, 2, 2, 7);
+  else { f(5, 2); f(4, 3, 2, 3); f(4, 6, 3, 1); f(5, 7, 2, 2); }
+  f(15, 8);                                              // ear
+  f((state === 'run' && !legA) ? 18 : 19, 8);            // snout tip
+  f(7, 9, 12, 4);                                        // body
+  e(17, 10);                                             // eye
+  f(18, 13);                                             // snout lower
+  if (state === 'jump') { f(9, 13, 2, 1); f(13, 13, 2, 1); }
+  else if (legA) { f(8, 13); f(8, 14, 2, 1); f(14, 13); f(14, 14, 2, 1); }
+  else           { f(9, 13); f(9, 14, 2, 1); f(13, 13); f(13, 14, 2, 1); }
+}
+
+function drawDeadBeaver(ctx, ox, oy) {
+  const P = BV_CELL;
+  const f = (c,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+  const e = (c,r,w,h) => { ctx.fillStyle=BG; ctx.fillRect(ox+c*P, oy+r*P, (w||1)*P, (h||1)*P); };
+  f(8, 5, 2); f(14, 5, 2);
+  f(8, 6); f(14, 6); f(18, 6);
+  f(7, 7, 12); f(7, 8, 12);
+  f(1, 9, 5); f(7, 9, 10); f(18, 9);
+  f(1, 10, 19);
+  e(16, 8);
+}
+
+// ─── CANDLE SPRITE ────────────────────────────────────────────────────────────
+// 5 cols wide body + 7-col plate. Origin = top-left of the wax body.
+// Flame shapes (relative to wick col 2, rows above the wick); 'h' = hollow core.
+const FLAMES = [
+  [[1,-2,3],[1,-3,3],[2,-4,1],[2,-5,1]],            // tall, upright
+  [[1,-2,3],[2,-3,2],[3,-4,1],[3,-5,1]],            // leaning right
+  [[1,-2,3],[1,-3,2],[1,-4,1],[1,-5,1]],            // leaning left
+  [[1,-2,3],[2,-3,1]],                              // short gutter
+  [[1,-2,3],[1,-3,3],[1,-4,3],[2,-5,1],[2,-6,1]],   // big flare
+];
+const CANDLE_W = 5;
+
+function drawCandle(ctx, c) {
+  const P = CELL, x = Math.round(c.x), y = c.y;
+  const f = (col,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(x+col*P, y+r*P, (w||1)*P, (h||1)*P); };
+  const e = (col,r) => { ctx.fillStyle=BG; ctx.fillRect(x+col*P, y+r*P, P, P); };
+  // Wax body with melted top and a side drip
+  f(0, 0, 1, c.h); f(1, 0, 3, c.h); f(4, 0, 1, c.h);
+  e(0, 0); e(4, 0);
+  f(-1, 1, 1, 2 + c.drip);
+  // Plate
+  f(-2, c.h, 9, 1); f(-1, c.h + 1, 7, 1);
+  // Wick
+  f(2, -1);
+  if (!c.out) {
+    // Flame (flickers)
+    for (const [col, r, w] of FLAMES[c.flame]) f(col, r, w, 1);
+    if (c.flame === 0 || c.flame === 4) e(2, -3); // hollow core
+    // Occasional spark
+    if (c.spark > 0) f(c.sparkX, -7 - Math.floor((6 - c.spark) / 2));
+  } else if (c.smoke < 50) {
+    // Wisps of smoke rising from a snuffed candle
+    for (let i = 0; i < 3; i++) {
+      const t = c.smoke - i * 8;
+      if (t < 0) continue;
+      const sx = 2 + Math.round(Math.sin((t + i * 5) * 0.25) * 1.5);
+      f(sx, -2 - Math.floor(t / 4));
+    }
+  }
+}
+
+// ─── SCENERY ──────────────────────────────────────────────────────────────────
+function drawCloud(ctx, x, y) {
+  const P = CELL;
+  const f = (c,r,w,h) => { ctx.fillStyle=FG; ctx.fillRect(x+c*P, y+r*P, (w||1)*P, (h||1)*P); };
+  f(2,0,3,1); f(1,1,5,1); f(0,2,7,2); f(1,4,5,1);
+}
+function drawGrass(ctx, x, y) {
+  const P = CELL;
+  ctx.fillStyle = FG;
+  ctx.fillRect(x, y, P, P*2);
+  ctx.fillRect(x+P*2, y-P, P, P*3);
+  ctx.fillRect(x+P*4, y, P, P*2);
+  ctx.fillRect(x+P*6, y-P, P, P*2);
+}
+
+// Mountains: pre-rendered once into a 900px tile, then scrolled
+const mountainTile = (() => {
+  const BASE_Y = 152, ZONE_TOP = 10, FADE_TOP = 80, TILE = 900;
+  const DEF = [[40,55,82],[120,90,108],[210,48,80],[310,75,100],[405,38,84],
+               [490,95,110],[600,62,88],[685,44,80],[775,82,104],[875,56,92]];
+  const TRI = DEF.map(([px, hw, deg]) => [px, Math.round(BASE_Y - hw / Math.tan(deg/2*Math.PI/180)), hw]);
+  const BAYER = [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+  const cv = document.createElement('canvas');
+  cv.width = TILE; cv.height = BASE_Y - ZONE_TOP;
+  const c = cv.getContext('2d');
+  c.fillStyle = FG;
+  for (let py = 0; py < cv.height; py++) {
+    const wy = ZONE_TOP + py;
+    const thr = 1 - (wy <= FADE_TOP ? 0 : (wy - FADE_TOP) / (BASE_Y - FADE_TOP));
+    if (thr <= 0) continue;
+    for (let px = 0; px < TILE; px++) {
+      if (BAYER[py % 4][px % 4] / 16 >= thr) continue;
+      for (const [tx, ty, hw] of TRI) {
+        if (wy <= ty) continue;
+        const hx = hw * (wy - ty) / (BASE_Y - ty);
+        if ((px >= tx-hx && px <= tx+hx) || (tx-hx < 0 && px >= tx-hx+TILE) || (tx+hx > TILE && px <= tx+hx-TILE)) {
+          c.fillRect(px, py, 1, 1); break;
+        }
+      }
+    }
+  }
+  return { cv, top: ZONE_TOP };
+})();
+function drawMountains(ctx, offset) {
+  const ox = -(Math.floor(offset) % 900);
+  ctx.drawImage(mountainTile.cv, ox, mountainTile.top);
+  ctx.drawImage(mountainTile.cv, ox + 900, mountainTile.top);
+}
+
+// ─── AUDIO (iOS-safe) ─────────────────────────────────────────────────────────
+let audioCtx = null, masterGain = null, soundOn = true;
+const ICON_SND_ON  = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
+const ICON_SND_OFF = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
+document.getElementById('soundToggle').innerHTML = ICON_SND_ON;
+
+if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
+const SILENT_WAV = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = soundOn ? 1 : 0;
+    masterGain.connect(audioCtx.destination);
+    if (!navigator.audioSession) {
+      const el = document.createElement('audio');
+      el.setAttribute('x-webkit-airplay', 'deny');
+      el.loop = true; el.src = SILENT_WAV;
+      el.play().catch(() => {});
+    }
+  }
+  if (audioCtx.state !== 'running') audioCtx.resume();
+}
+['touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, ensureAudio, true));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+});
+
+// One-shot tone; nodes are disconnected when done (iPhone goes silent otherwise)
+function _tone(freq0, freq1, t, dur, vol, out) {
+  const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+  osc.type = 'square';
+  osc.connect(g); g.connect(out || masterGain);
+  osc.frequency.setValueAtTime(freq0, t);
+  if (freq1 !== freq0) osc.frequency.linearRampToValueAtTime(freq1, t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.onended = () => { osc.disconnect(); g.disconnect(); };
+  osc.start(t); osc.stop(t + dur);
+  return osc;
+}
+function _beep(f0, f1, dur, vol) { if (audioCtx) _tone(f0, f1, audioCtx.currentTime, dur, vol || 0.3); }
+function _seq(notes, vol) {
+  if (!audioCtx) return;
+  let t = audioCtx.currentTime + 0.02;
+  for (const [freq, dur] of notes) { if (freq) _tone(freq, freq, t, dur, vol || 0.25); t += dur; }
+}
+function sfxStep()     { _beep(70, 50, 0.04, 0.07); }
+function sfxJump()     { _beep(180, 540, 0.15, 0.25); }
+function sfxClear()    { _seq([[660, 0.05], [880, 0.08]], 0.15); }
+function sfxHit()      { _beep(280, 80, 0.25, 0.3); }
+function sfxGameOver() {
+  _seq([[523.25,0.11],[523.25,0.11],[493.88,0.22],[523.25,0.22],[493.88,0.22],[415.3,0.22],[392,0.22],[369.99,0.6]], 0.2);
+}
+
+// Background music loop (from game start until game over)
+let _wmTimer = null, _wmGain = null, _wmOscs = [];
+function startMusic() {
+  stopMusic();
+  if (!audioCtx) return;
+  _wmGain = audioCtx.createGain(); _wmGain.connect(masterGain);
+  _wmLoop(audioCtx.currentTime + 0.05);
+}
+function stopMusic() {
+  if (_wmTimer) { clearTimeout(_wmTimer); _wmTimer = null; }
+  const now = audioCtx ? audioCtx.currentTime : 0;
+  _wmOscs.forEach(o => { try { o.stop(now); } catch (e) {} });
+  _wmOscs = [];
+  if (_wmGain) { try { _wmGain.disconnect(); } catch (e) {} _wmGain = null; }
+}
+function _wmLoop(t0) {
+  if (!_wmGain) return;
+  // "Happy birthday to you" x2: G G A G C B | G G A G D C, all notes equal length
+  const D = 0.3, G4 = 392.0, A4 = 440.0, B4 = 493.88, C5 = 523.25, D5 = 587.33;
+  const SEQ = [G4, G4, A4, G4, C5, B4, G4, G4, A4, G4, D5, C5].map((freq, i) => [freq, i, 0.9]);
+  _wmOscs = _wmOscs.filter(o => !o._done);
+  for (const [freq, b, d] of SEQ) {
+    const o = _tone(freq, freq, t0 + b*D, d*D, 0.09, _wmGain);
+    o.addEventListener('ended', () => { o._done = true; });
+    _wmOscs.push(o);
+  }
+  _wmTimer = setTimeout(() => _wmLoop(t0 + SEQ.length*D), (t0 + SEQ.length*D - audioCtx.currentTime - 0.1) * 1000);
+}
+
+function toggleSound() {
+  soundOn = !soundOn;
+  if (masterGain) masterGain.gain.value = soundOn ? 1 : 0;
+  document.getElementById('soundToggle').innerHTML = soundOn ? ICON_SND_ON : ICON_SND_OFF;
+}
+
+// ─── GAME STATE ───────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+
+let gameState = 'title';   // title | playing | dying | dead
+let score = 0, lives = 3;
+let hiScore = +(localStorage.getItem('beaverCandlesBest') || 0);
+let frame = 0, speed = 4.8, speedTimer = 0, spawnTimer = 60;
+let mountainOffset = 0, dyingTimer = 0, deadAt = 0, lastTime = 0;
+let candles = [], clouds = [], grassTufts = [];
+let floatingHearts = [], floatingTexts = [], dustParticles = [];
+let titleAnim = null;
+
+const bv = { x: 80, y: GROUND - BV_H*BV_CELL, vy: 0, state: 'run', invincible: 0 };
+
+for (let i = 0; i < 6; i++) clouds.push({ x: Math.random()*W, y: 18 + Math.random()*55, speed: 0.35 + Math.random()*0.35 });
+for (let i = 0; i < 16; i++) grassTufts.push({ x: Math.random()*W });
+
+// ─── INPUT ────────────────────────────────────────────────────────────────────
+// Space / ↑ / tap = jump (or start / restart on overlays)
+function press() {
+  ensureAudio();
+  if (gameState === 'title') { startGame(); return; }
+  if (gameState === 'dead') { if (performance.now() - deadAt > 700) startGame(); return; }
+  if (gameState === 'playing' && bv.state === 'run') jump();
+}
+window.addEventListener('keydown', e => {
+  if (['Space', 'ArrowUp', 'Enter', 'KeyW'].includes(e.code)) {
+    e.preventDefault();
+    if (!e.repeat) press();
+  }
+});
+const isSoundBtn = e => e.target.closest && e.target.closest('#soundToggle');
+document.addEventListener('touchstart', e => {
+  if (isSoundBtn(e)) return;
+  e.preventDefault(); press();
+}, { passive: false });
+document.addEventListener('mousedown', e => { if (!isSoundBtn(e)) press(); });
+
+function jump() {
+  bv.vy = -10; bv.state = 'jump';
+  sfxJump();
+  for (let i = 0; i < 7; i++)
+    dustParticles.push({ x: bv.x + (3 + i*2)*BV_CELL, y: GROUND - 1, dx: (i - 3)*0.9, dy: -1.2 - (i % 3)*0.4, t: 0 });
+}
+
+// ─── OVERLAYS ─────────────────────────────────────────────────────────────────
+function showOverlay(html) { overlay.innerHTML = html; overlay.style.display = 'flex'; }
+function hideOverlay() {
+  overlay.style.display = 'none';
+  if (titleAnim) { clearInterval(titleAnim); titleAnim = null; }
+}
+const isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const ACTION = isMobile ? 'TAP' : 'Press <span class="key-pill">SPACE</span>';
+
+function showTitle() {
+  gameState = 'title';
+  showOverlay(`<canvas id="bvTitle" width="62" height="50" style="width:124px;height:100px;margin-bottom:10px;image-rendering:pixelated"></canvas>
+    <h1>Forest Beaver - Birthday Edition</h1>
+    <div class="subtitle">How many candles can you jump? Don't get burned</div>
+    <div class="hint">${ACTION} to start</div>`);
+  const bctx = document.getElementById('bvTitle').getContext('2d');
+  let tf = 0;
+  const draw = () => { bctx.fillStyle = BG; bctx.fillRect(0, 0, 62, 50); drawBeaver(bctx, 0, 2, tf, 'run'); tf += 2.1875; };
+  draw();
+  titleAnim = setInterval(draw, 50);
+  startMusic();
+}
+
+function showDead() {
+  gameState = 'dead';
+  deadAt = performance.now();
+  stopMusic();
+  sfxGameOver();
+  const newBest = score > 0 && score >= hiScore;
+  showOverlay(`<canvas id="bvDead" width="69" height="39" style="width:138px;height:78px;margin-bottom:10px;image-rendering:pixelated"></canvas>
+    <h1>OUCH!</h1>
+    <div class="subtitle">${score} candle${score === 1 ? '' : 's'} jumped &nbsp;|&nbsp; ${newBest ? 'NEW BEST!' : 'Best: ' + hiScore}</div>
+    <div class="hint">${ACTION} to try again</div>`);
+  const bctx = document.getElementById('bvDead').getContext('2d');
+  drawDeadBeaver(bctx, 0, 0);
+}
+
+function updateHUD() {
+  document.getElementById('scoreLabel').textContent = `CANDLES: ${score}`;
+  document.getElementById('bestLabel').textContent = `BEST: ${hiScore}`;
+  document.getElementById('livesLabel').textContent = lives > 0 ? '❤ '.repeat(lives).trim() : '☆';
+}
+
+function startGame() {
+  hideOverlay();
+  if (!_wmGain) startMusic();
+  gameState = 'playing';
+  score = 0; lives = 3; speed = 4.8; speedTimer = 0; spawnTimer = 60;
+  candles = []; floatingHearts = []; floatingTexts = []; dustParticles = [];
+  bv.y = GROUND - BV_H*BV_CELL; bv.vy = 0; bv.state = 'run'; bv.invincible = 0;
+  updateHUD();
+}
+
+// ─── CANDLES ──────────────────────────────────────────────────────────────────
+function makeCandle(x) {
+  const h = 7 + Math.floor(Math.random() * 5);  // 7-11 rows of wax
+  return { x, h, y: GROUND - (h + 2)*CELL, drip: Math.floor(Math.random()*3),
+           flame: Math.floor(Math.random()*FLAMES.length), flick: Math.random()*6,
+           spark: 0, sparkX: 2, out: false, smoke: 0, cleared: false, hit: false };
+}
+function spawnCandle() {
+  candles.push(makeCandle(W + 20));
+  // Sometimes a pair close enough to clear in one jump
+  if (Math.random() < 0.18) candles.push(makeCandle(W + 20 + 22 + Math.random()*10));
+  // Gap in frames; shrinks a little as the run goes on
+  const tight = Math.max(0, 1 - (speed - 4.8) / 6);
+  const r = Math.random();
+  spawnTimer = r < 0.25 ? 42 + Math.random()*15
+             : r < 0.80 ? (60 + Math.random()*45) * (0.7 + 0.3*tight)
+             : 120 + Math.random()*60;
+}
+function candleRect(c) {
+  return { x: c.x, y: c.y - 5*CELL, w: CANDLE_W*CELL, h: (c.h + 5)*CELL };
+}
+function beaverRect() {
+  return { x: bv.x + 7*BV_CELL, y: bv.y + 9*BV_CELL, w: 12*BV_CELL, h: 6*BV_CELL };
+}
+const overlap = (a, b) => a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+
+function loseLife(c) {
+  c.hit = true; c.out = true; c.smoke = 0;
+  sfxHit();
+  lives--;
+  floatingHearts.push({ x: bv.x + 9*BV_CELL, y: bv.y + 9*BV_CELL, t: 0 });
+  updateHUD();
+  if (lives <= 0) { gameState = 'dying'; dyingTimer = 60; }
+  else bv.invincible = 90;
+}
+
+// ─── UPDATE ───────────────────────────────────────────────────────────────────
+function update(dt) {
+  for (let i = floatingHearts.length - 1; i >= 0; i--) {
+    const h = floatingHearts[i]; h.t += dt; h.y -= 0.9*dt;
+    if (h.t > 120) floatingHearts.splice(i, 1);
+  }
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const t = floatingTexts[i]; t.t += dt; t.y -= 0.6*dt;
+    if (t.t > 60) floatingTexts.splice(i, 1);
+  }
+  for (let i = dustParticles.length - 1; i >= 0; i--) {
+    const d = dustParticles[i]; d.t += dt; d.x += d.dx*dt; d.y += d.dy*dt; d.dy += 0.12*dt;
+    if (d.t > 22) dustParticles.splice(i, 1);
+  }
+  // Flames keep flickering on every screen
+  for (const c of candles) {
+    if (c.out) { c.smoke += dt; continue; }
+    c.flick -= dt;
+    if (c.flick <= 0) {
+      c.flame = Math.floor(Math.random() * FLAMES.length);
+      c.flick = 3 + Math.random() * 5;
+      if (c.spark <= 0 && Math.random() < 0.08) { c.spark = 6; c.sparkX = 1 + Math.floor(Math.random()*3); }
+    }
+    if (c.spark > 0) c.spark -= dt;
+  }
+  if (dyingTimer > 0) {
+    dyingTimer -= dt;
+    if (dyingTimer <= 0) {
+      if (score > hiScore) { hiScore = score; localStorage.setItem('beaverCandlesBest', hiScore); }
+      updateHUD();
+      showDead();
+    }
+  }
+  if (gameState !== 'playing') return;
+
+  const prevFrame = frame;
+  frame += dt;
+  if (bv.state === 'run' && Math.floor(frame/7) % 2 !== Math.floor(prevFrame/7) % 2) sfxStep();
+
+  mountainOffset += speed * 0.15 * dt;
+  speedTimer += dt;
+  if (speedTimer >= 600) { speedTimer -= 600; speed = Math.min(speed + 0.3, 9.5); }
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) spawnCandle();
+
+  if (bv.state === 'jump') {
+    bv.vy += 0.65*dt; bv.y += bv.vy*dt;
+    if (bv.y >= GROUND - BV_H*BV_CELL) { bv.y = GROUND - BV_H*BV_CELL; bv.vy = 0; bv.state = 'run'; }
+  }
+  if (bv.invincible > 0) bv.invincible = Math.max(0, bv.invincible - dt);
+
+  for (let i = candles.length - 1; i >= 0; i--) {
+    const c = candles[i];
+    c.x -= speed*dt;
+    if (!c.hit && !c.cleared) {
+      if (overlap(beaverRect(), candleRect(c))) {
+        if (bv.invincible > 0) { c.hit = true; c.out = true; c.smoke = 0; }  // snuffed while blinking: no point, no penalty
+        else { loseLife(c); if (gameState !== 'playing') return; }
+      }
+      else if (c.x + CANDLE_W*CELL < bv.x + 7*BV_CELL) {
+        c.cleared = true; score++;
+        if (score > hiScore) hiScore = score;
+        floatingTexts.push({ text: '+1', x: c.x - 2, y: c.y - 18, t: 0 });
+        sfxClear(); updateHUD();
+      }
+    }
+    if (c.x < -30) candles.splice(i, 1);
+  }
+
+  for (const c of clouds) { c.x -= c.speed*dt; if (c.x < -60) { c.x = W + 20; c.y = 18 + Math.random()*55; } }
+  for (const g of grassTufts) { g.x -= speed*dt; if (g.x < -20) g.x = W + Math.random()*40; }
+}
+
+// ─── RENDER ───────────────────────────────────────────────────────────────────
+function render() {
+  ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+  drawMountains(ctx, mountainOffset);
+  ctx.fillStyle = FG;
+  ctx.fillRect(0, GROUND, W, 5);
+  for (const c of clouds) drawCloud(ctx, c.x, c.y);
+  for (const g of grassTufts) drawGrass(ctx, g.x, GROUND - CELL);
+  for (const c of candles) drawCandle(ctx, c);
+
+  if (gameState !== 'dying' || Math.floor(dyingTimer/6) % 2 === 0) {
+    if (bv.invincible === 0 || Math.floor(bv.invincible/6) % 2 === 0)
+      drawBeaver(ctx, bv.x, bv.y, frame, bv.state);
+  }
+
+  ctx.fillStyle = FG;
+  ctx.font = '14px "Silkscreen", monospace';
+  for (const h of floatingHearts) { ctx.globalAlpha = Math.max(0, 1 - h.t/120); ctx.fillText('❤', h.x, h.y); }
+  for (const d of dustParticles) { ctx.globalAlpha = Math.max(0, 1 - d.t/22) * 0.65; ctx.fillRect(Math.round(d.x), Math.round(d.y), 2, 2); }
+  ctx.font = 'bold 11px "Silkscreen", monospace';
+  for (const t of floatingTexts) { ctx.globalAlpha = Math.max(0, 1 - t.t/60); ctx.fillText(t.text, t.x, t.y); }
+  ctx.globalAlpha = 1;
+}
+
+// ─── LOOP ─────────────────────────────────────────────────────────────────────
+function loop(now) {
+  const dt = lastTime ? Math.min((now - lastTime) / (1000/60), 3) : 1;
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+showTitle();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
